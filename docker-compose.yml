@@ -1,0 +1,141 @@
+version: "3.8"
+
+services:
+  # ============================================================
+  # SOURCE : PostgreSQL (base OLTP simulée du site ShopNova)
+  # ============================================================
+  postgres:
+    image: postgres:16
+    container_name: shopnova-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "max_wal_senders=10"
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./source/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - shopnova-net
+
+  # ============================================================
+  # INGESTION : Kafka (KRaft, sans Zookeeper)
+  # ============================================================
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: shopnova-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_NUM_PARTITIONS: 3
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    networks:
+      - shopnova-net
+
+  # ============================================================
+  # INGESTION : Kafka Connect + plugin Debezium
+  # ============================================================
+  kafka-connect:
+    image: debezium/connect:2.7
+    container_name: shopnova-connect
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: shopnova-connect-group
+      CONFIG_STORAGE_TOPIC: shopnova_connect_configs
+      OFFSET_STORAGE_TOPIC: shopnova_connect_offsets
+      STATUS_STORAGE_TOPIC: shopnova_connect_status
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+    ports:
+      - "${KAFKA_CONNECT_PORT}:8083"
+    networks:
+      - shopnova-net
+
+  # ============================================================
+  # INGESTION : Kafka UI (démonstration des messages CDC)
+  # ============================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: shopnova-kafka-ui
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: shopnova
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+    ports:
+      - "${KAFKA_UI_PORT}:8080"
+    networks:
+      - shopnova-net
+
+  # ============================================================
+  # BRONZE : MinIO (stockage objet S3-compatible)
+  # ============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: shopnova-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - shopnova-net
+
+# ============================================================
+# VOLUMES PERSISTANTS
+# ============================================================
+volumes:
+  postgres_data:
+  kafka_data:
+  minio_data:
+
+# ============================================================
+# RÉSEAU COMMUN
+# ============================================================
+networks:
+  shopnova-net:
+    driver: bridge

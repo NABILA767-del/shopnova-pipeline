@@ -1,0 +1,26 @@
+{
+  "name": "shopnova-cdc",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "debezium",
+    "database.password": "ShopNova2026!",
+    "database.dbname": "shopnova",
+    "topic.prefix": "shopnova",
+    "table.include.list": "public.customers,public.products,public.orders",
+    "plugin.name": "pgoutput",
+    "publication.name": "shopnova_pub",
+    "slot.name": "shopnova_slot",
+    "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+    "schema.history.internal.kafka.topic": "shopnova.schema.history",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter.schemas.enable": "false",
+    "tombstones.on.delete": "true",
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect"
+  }
+}
