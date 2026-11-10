@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ============================================================
   # SOURCE : PostgreSQL (base OLTP simulée du site ShopNova)
@@ -12,6 +10,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST_AUTH_METHOD: trust
     command:
       - "postgres"
       - "-c"
@@ -21,7 +20,7 @@ services:
       - "-c"
       - "max_wal_senders=10"
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./source/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
@@ -37,23 +36,28 @@ services:
   # INGESTION : Kafka (KRaft, sans Zookeeper)
   # ============================================================
   kafka:
-    image: bitnami/kafka:3.7
+    image: apache/kafka:3.7.0
     container_name: shopnova-kafka
     restart: unless-stopped
     environment:
-      KAFKA_CFG_NODE_ID: 1
-      KAFKA_CFG_PROCESS_ROLES: broker,controller
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_CFG_NUM_PARTITIONS: 3
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
     ports:
       - "9092:9092"
+      - "9094:9094"
     volumes:
-      - kafka_data:/bitnami/kafka
+      - kafka_data:/var/lib/kafka/data
     networks:
       - shopnova-net
 
@@ -61,7 +65,7 @@ services:
   # INGESTION : Kafka Connect + plugin Debezium
   # ============================================================
   kafka-connect:
-    image: debezium/connect:2.7
+    image: quay.io/debezium/connect:2.7.3.Final 
     container_name: shopnova-connect
     restart: unless-stopped
     depends_on:
@@ -105,7 +109,7 @@ services:
   # BRONZE : MinIO (stockage objet S3-compatible)
   # ============================================================
   minio:
-    image: minio/minio:latest
+    image: onyxdotapp/minio:RELEASE.2025-07-23T15-54-02Z-cpuv1
     container_name: shopnova-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -122,6 +126,60 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - shopnova-net
+
+  # ============================================================
+  # SILVER : Initialisation MinIO + Spark Iceberg
+  # ============================================================
+  minio-init:
+    image: pgsty/mc:latest
+    container_name: shopnova-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; do sleep 2; done;
+      mc mb -p local/warehouse || true;
+      mc mb -p local/bronze    || true;
+      echo 'MinIO init OK';
+      exit 0;"
+    networks:
+      - shopnova-net
+
+  spark-iceberg:
+    image: tabulario/spark-iceberg:3.5.1_1.5.0
+    container_name: shopnova-spark
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      AWS_ACCESS_KEY_ID:     ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION:            us-east-1
+    volumes:
+      - ./silver:/opt/silver
+      - ./source:/opt/source
+      - ./gold:/opt/gold    
+    ports:
+      - "8081:8080"   # UI Spark
+      - "8888:8888"   # Jupyter
+      - "10000:10000" # Thrift server
+    networks:
+      - shopnova-net
+
+  # ============================================================
+  # PRÉSENTATION : Metabase (Dashboard)
+  # ============================================================
+  metabase:
+    image: adamjsturge/metabase-duckdb:latest
+    container_name: shopnova-metabase
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+       - ./shopnova_gold.duckdb:/data/shopnova_gold.duckdb
     networks:
       - shopnova-net
 

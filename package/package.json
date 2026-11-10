@@ -1,0 +1,39 @@
+{
+  "name": "@haybarn/ext-storage_compat-h1-5-5-linux-x64",
+  "version": "202608.20.100054",
+  "description": "Haybarn extension 'storage_compat' for linux/x64 (glibc). Built against haybarn 1.5.5. Installed automatically by the @haybarn/ext-storage_compat-h1-5-5 meta-package; use that, not this leaf, in your dependencies.",
+  "homepage": "https://github.com/carlopi/duckdb-storage-compat",
+  "bugs": {
+    "url": "https://github.com/carlopi/duckdb-storage-compat/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Query-farm-haybarn/haybarn-community-extensions.git"
+  },
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "haybarn-metadata.json",
+    "README.md"
+  ],
+  "haybarn": {
+    "built_at": "2026-08-27T02:50:30Z",
+    "ext_commit": "40441cc6fcfb9e0623bcfdc192c3a63bf2fcf28a",
+    "ext_version_label": "",
+    "extension": "storage_compat",
+    "haybarn_version": "1.5.5",
+    "sha256": "3d7faaa2d988c113239579385ece5e0d170e69c6eb2aa56079de27281ecf0369"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "libc": [
+    "glibc"
+  ]
+}
