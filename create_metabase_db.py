@@ -14,7 +14,6 @@ if os.path.exists('shopnova_gold.duckdb'):
 con = duckdb.connect('shopnova_gold.duckdb')
 print("Fichier 'shopnova_gold.duckdb' créé.\n")
 
-# Client S3 boto3 avec signature v4 (obligatoire pour MinIO)
 s3 = boto3.client(
     's3',
     endpoint_url='http://127.0.0.1:9000',
@@ -42,7 +41,6 @@ def load_parquet_from_minio(bucket, prefix):
     return pd.concat(dfs, ignore_index=True)
 
 def clean_dtypes(df):
-    """Convertit les types pandas 'str' (StringDtype) en 'object' pour DuckDB."""
     for col in df.columns:
         if str(df[col].dtype) in ('str', 'string'):
             df[col] = df[col].astype(object)
@@ -53,8 +51,6 @@ def clean_dtypes(df):
 # --- fct_orders ---
 print("\nChargement de fct_orders depuis MinIO...")
 orders_df = load_parquet_from_minio('warehouse', 'silver/orders/data/')
-print(f"  {len(orders_df)} lignes brutes lues")
-
 orders_df = orders_df.sort_values('_lsn', ascending=False).drop_duplicates(subset=['id'], keep='first')
 orders_df = orders_df.rename(columns={'id': 'order_id', 'amount': 'total_amount'})
 orders_final = orders_df[['order_id', 'customer_id', 'product_id', 'quantity', 'total_amount', 'status', 'created_at']]
@@ -66,8 +62,6 @@ print(f"✅ fct_orders : {len(orders_final)} commandes")
 # --- dim_customers ---
 print("\nChargement de dim_customers depuis MinIO...")
 cust_df = load_parquet_from_minio('warehouse', 'silver/customers/data/')
-print(f"  {len(cust_df)} lignes brutes lues")
-
 cust_df = cust_df[cust_df['_is_deleted'] == False]
 cust_df = cust_df.sort_values('_lsn', ascending=False).drop_duplicates(subset=['customer_id'], keep='first')
 cust_final = cust_df[['customer_id', 'name', 'email', 'city', 'created_at', 'updated_at']]
@@ -75,6 +69,32 @@ cust_final = clean_dtypes(cust_final)
 
 con.execute("CREATE TABLE dim_customers AS SELECT * FROM cust_final")
 print(f"✅ dim_customers : {len(cust_final)} clients")
+
+# --- segments_rfm (Optionnel ECO-08) ---
+print("\nCréation de segments_rfm...")
+# On prépare un dataframe pour le calcul RFM
+rfm_df = orders_final.copy()
+rfm_df['created_at'] = pd.to_datetime(rfm_df['created_at']).dt.tz_localize(None)
+today = pd.Timestamp.now()
+rfm = rfm_df.groupby('customer_id').agg({
+    'created_at': lambda x: (today - x.max()).days,
+    'order_id': 'count',
+    'total_amount': 'sum'
+}).reset_index()
+rfm.columns = ['customer_id', 'recency', 'frequency', 'monetary']
+
+def segment(row):
+    if row['frequency'] > 5 and row['monetary'] > 3000:
+        return 'VIP'
+    elif row['frequency'] > 2:
+        return 'Fidèle'
+    else:
+        return 'Occasionnel'
+
+rfm['segment'] = rfm.apply(segment, axis=1)
+rfm = clean_dtypes(rfm)
+con.execute("CREATE TABLE segments_rfm AS SELECT * FROM rfm")
+print(f"✅ segments_rfm : {len(rfm)} clients segmentés")
 
 print("\n🎉 Fichier 'shopnova_gold.duckdb' prêt pour Metabase !")
 con.close()
